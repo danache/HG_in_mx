@@ -1,116 +1,130 @@
 import mxnet as mx
+import re
 from dataprovider.dataProvider import hgIter
 import opt
 import os
+from metric.MAPmetric import MapMetric
 from model.Hourglass import createModel
-# kv = mx.kvstore.create(opt.kv_store)
-# devs = mx.cpu() if opt.gpus is None else [mx.gpu(int(i)) for i in opt.gpus.split(',')]
-# epoch_size = max(int(opt.num_examples / opt.batch_size / kv.num_workers), 1)
-# begin_epoch = opt.model_load_epoch if opt.model_load_epoch else 0
-# if not os.path.exists("./model"):
-#     os.mkdir("./model")
-# model_prefix = "model/resnet-{}-{}-{}".format(opt.data_type, opt.depth, kv.rank)
-# checkpoint = mx.callback.do_checkpoint(model_prefix)
-ctx = [mx.gpu(0)]
-begin_epoch = 0
-end_epoch = 0
+import logging
+def get_lr_scheduler(learning_rate, lr_refactor_step, lr_refactor_ratio,
+                     num_example, batch_size, begin_epoch):
+    """
+    Compute learning rate and refactor scheduler
 
-arg_params = None
-aux_params = None
+    Parameters:
+    ---------
+    learning_rate : float
+        original learning rate
+    lr_refactor_step : comma separated str
+        epochs to change learning rate
+    lr_refactor_ratio : float
+        lr *= ratio at certain steps
+    num_example : int
+        number of training images, used to estimate the iterations given epochs
+    batch_size : int
+        training batch size
+    begin_epoch : int
+        starting epoch
+
+    Returns:
+    ---------
+    (learning_rate, mx.lr_scheduler) as tuple
+    """
+    assert lr_refactor_ratio > 0
+    iter_refactor = [int(r) for r in lr_refactor_step.split(',') if r.strip()]
+    if lr_refactor_ratio >= 1:
+        return (learning_rate, None)
+    else:
+        lr = learning_rate
+        epoch_size = num_example // batch_size
+        for s in iter_refactor:
+            if begin_epoch >= s:
+                lr *= lr_refactor_ratio
+        if lr != learning_rate:
+            logging.getLogger().info("Adjusted learning rate to {} for epoch {}".format(lr, begin_epoch))
+
+        steps = [epoch_size * (x - begin_epoch) for x in iter_refactor if x > begin_epoch]
+        if not steps:
+            return (lr, None)
+        print(steps)
+        lr_scheduler = mx.lr_scheduler.MultiFactorScheduler(step=steps, factor=lr_refactor_ratio)
+        return (lr, lr_scheduler)
+logging.basicConfig()
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+if opt.log_file:
+    fh = logging.FileHandler(opt.log_file)
+    logger.addHandler(fh)
+
+#######################define base params###############
+ctx = [mx.gpu(int(i)) for i in opt.gpus]
+
+####################### define network #################
 symbol = createModel()
-# if opt.retrain:
-#     _, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, opt.model_load_epoch)
-# if opt.memonger:
-#     import memonger
-#     symbol = memonger.search_plan(symbol, data=(opt.batch_size, 3, 32, 32) if opt.data_type=="cifar10"
-#                                                 else (opt.batch_size, 3, 224, 224))
-epoch_size = 200
-train =  hgIter(imgdir="/home/dan/ai_clg/", txt="/home/dan/ai_clg/a.txt",  resize=256, scale=0.25,outsize=64,normalize=True,flipping=False,color_jitting=30,mean_pixels=[0,0,0],
-                 rotate=30, batch_size=1,  is_aug=False,randomize=True,joints_name=None,partnum=14,datasetname="train",isTraing=True
+######################
 
-  # You can specify more augmentation options. Use help(mx.io.ImageRecordIter) to see all the options.
-)
-def multi_factor_scheduler(begin_epoch, epoch_size, step=[60, 75, 90], factor=0.1):
-    step_ = [epoch_size * (x-begin_epoch) for x in step if x-begin_epoch > 0]
-    return mx.lr_scheduler.MultiFactorScheduler(step=step_, factor=factor) if len(step_) else None
+epoch_size = opt.epoch
+################### dataIter #########################
+train =  hgIter(imgdir=opt.train_img_path, txt=opt.train_file,  resize=256, scale=0.25,outsize=64,normalize=True,
+                flipping=False,color_jitting=30,mean_pixels=[0,0,0], rotate=30, batch_size=opt.batch_size,
+                is_aug=False,randomize=True,joints_name=None,partnum=14,datasetname="train",isTraing=True)
+###################
+if opt.freeze_pattern.strip():
+    re_prog = re.compile(opt.freeze_pattern)
+    fixed_param_names = [name for name in symbol.list_arguments() if re_prog.match(name)]
+else:
+    fixed_param_names = None
+ctx_str = '('+ ','.join([str(c) for c in ctx]) + ')'
+resume = opt.resume
+finetune = opt.finetune
+prefix = opt.prefix
+if resume > 0:
+    logger.info("Resume training with {} from epoch {}"
+        .format(ctx_str, resume))
+    _, args, auxs = mx.model.load_checkpoint(prefix, resume)
+    begin_epoch = resume
+else:
+    logger.info("Experimental: start training from scratch with {}"
+        .format(ctx_str))
+    args = None
+    auxs = None
+    fixed_param_names = None
 
-# train = mx.io.ImageRecordIter(
-#     path_imgrec         = os.path.join(opt.data_dir, "cifar10_train.rec") if opt.data_type == 'cifar10' else
-#                           os.path.join(opt.data_dir, "train_256_q90.rec") if opt.aug_level == 1
-#                           else os.path.join(opt.data_dir, "train_480_q90.rec"),
-#     label_width         = 1,
-#     data_name           = 'data',
-#     label_name          = 'softmax_label',
-#     data_shape          = (3, 32, 32) if opt.data_type=="cifar10" else (3, 224, 224),
-#     batch_size          = opt.batch_size,
-#     pad                 = 4 if opt.data_type == "cifar10" else 0,
-#     fill_value          = 127,  # only used when pad is valid
-#     rand_crop           = True,
-#     max_random_scale    = 1.0,  # 480 with imagnet, 32 with cifar10
-#     min_random_scale    = 1.0 if opt.data_type == "cifar10" else 1.0 if opt.aug_level == 1 else 0.533,  # 256.0/480.0
-#     max_aspect_ratio    = 0 if opt.data_type == "cifar10" else 0 if opt.aug_level == 1 else 0.25,
-#     random_h            = 0 if opt.data_type == "cifar10" else 0 if opt.aug_level == 1 else 36,  # 0.4*90
-#     random_s            = 0 if opt.data_type == "cifar10" else 0 if opt.aug_level == 1 else 50,  # 0.4*127
-#     random_l            = 0 if opt.data_type == "cifar10" else 0 if opt.aug_level == 1 else 50,  # 0.4*127
-#     max_rotate_angle    = 0 if opt.aug_level <= 2 else 10,
-#     max_shear_ratio     = 0 if opt.aug_level <= 2 else 0.1,
-#     rand_mirror         = True,
-#     shuffle             = True,
-#     num_parts           = kv.num_workers,
-#     part_index          = kv.rank)
-# val = mx.io.ImageRecordIter(
-#     path_imgrec         = os.path.join(opt.data_dir, "cifar10_val.rec") if opt.data_type == 'cifar10' else
-#                           os.path.join(opt.data_dir, "val_256_q90.rec"),
-#     label_width         = 1,
-#     data_name           = 'data',
-#     label_name          = 'softmax_label',
-#     batch_size          = opt.batch_size,
-#     data_shape          = (3, 32, 32) if opt.data_type=="cifar10" else (3, 224, 224),
-#     rand_crop           = False,
-#     rand_mirror         = False,
-#     num_parts           = kv.num_workers,
-#     part_index          = kv.rank)
+if fixed_param_names:
+    logger.info("Freezed parameters: [" + ','.join(fixed_param_names) + ']')
+
+batch_end_callback = mx.callback.Speedometer(train.batch_size, frequent=opt.log_frequent)
+epoch_end_callback = mx.callback.do_checkpoint(prefix,50)
+num_example = train.getN()
+
 mod = mx.mod.Module(symbol=symbol,
-                context=mx.gpu(0),
+                context=ctx,
                 data_names=['data'],
-                label_names=['label'])
-#mod.bind(data_shapes=[('data', (1, 3, 256, 256))], for_training=False)
+                label_names=['label'],
+                    logger=logger)
+# print(train.provide_data)
+# print(train.provide_label)
 mod.bind(data_shapes=train.provide_data, label_shapes=train.provide_label)
-# batch_end_callback = mx.callback.Speedometer(train.batch_size, frequent=frequent)
-# epoch_end_callback = mx.callback.do_checkpoint(prefix)
-# learning_rate, lr_scheduler = get_lr_scheduler(learning_rate, lr_refactor_step,
-#     lr_refactor_ratio, num_example, batch_size, begin_epoch)
-# optimizer_params={'learning_rate':learning_rate,
-#                   'momentum':momentum,
-#                   'wd':weight_decay,
-#                   'lr_scheduler':lr_scheduler,
-#                   'clip_gradient':None,
-#                   'rescale_grad': 1.0 / len(ctx) if len(ctx) > 0 else 1.0 }
-# monitor = mx.mon.Monitor(iter_monitor, pattern=monitor_pattern) if iter_monitor > 0 else None
-
-# run fit net, every n epochs we run evaluation network to get mAP
-# if voc07_metric:
-#     valid_metric = VOC07MApMetric(ovp_thresh, use_difficult, class_names, pred_idx=3)
-# else:
-#     valid_metric = MApMetric(ovp_thresh, use_difficult, class_names, pred_idx=3)
+learning_rate, lr_scheduler = get_lr_scheduler(opt.learning_rate, opt.lr_refactor_step,
+        opt.lr_refactor_ratio, num_example, opt.batch_size, opt.beginEpoch)
 
 optimizer_params={'learning_rate':opt.learning_rate,
-                      'momentum':opt.momentum,
-                      'wd':opt.weight_decay,
-                      'lr_scheduler':opt.lr_scheduler,
-                      'clip_gradient':None,
-                      'rescale_grad': 1.0 / len(ctx) if len(ctx) > 0 else 1.0 }
-print("model fit")
-mod.fit(train,
+                  'gamma1':0.9,
+                  'wd':opt.weight_decay,
+                  'lr_scheduler':lr_scheduler,
+                  'gamma2':0.9,
+                  'clip_gradient':None,
+                  'rescale_grad': 1.0 / len(ctx) if len(ctx) > 0 else 1.0 }
 
-        # eval_metric=MultiBoxMetric(),
+mod.fit(train,
+        eval_metric=MapMetric(),
         # validation_metric=valid_metric,
-        # batch_end_callback=batch_end_callback,
-        # epoch_end_callback=epoch_end_callback,
-        optimizer='sgd',
+        batch_end_callback=batch_end_callback,
+        epoch_end_callback=epoch_end_callback,
+        optimizer='RMSProp',
         optimizer_params=optimizer_params,
-        begin_epoch=begin_epoch,
-        num_epoch=end_epoch,
+        begin_epoch=opt.beginEpoch,
+        num_epoch=opt.epoch,
         initializer=mx.init.Xavier(),)
         # arg_params=args,
         # aux_params=auxs,

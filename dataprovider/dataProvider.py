@@ -116,38 +116,38 @@ class hgIter(mx.io.DataIter):
     #         raise RuntimeError("Invalid ImageDetRecordIter: " + path_imgrec)
     #     self.reset()
 
-
-    def _get_batch(self):
-        self._batch = self.rec.next()
-        if not self._batch:
-            return False
-        #data = mx.nd.cast(self._batch.data[0],dtype='uint8').asnumpy()
-        #data = np.transpose(data,(2,3,1,0))
-        #img_data = np.reshape(data, (256,256,3))
-        #img_data = cv2.fromarray(img_data)
-        #imgcp = img_data.copy()
-        heatmap = np.zeros((self._batch.label[0].shape[0],opt.partnum,opt.outputRes, opt.outputRes ), dtype=np.float32)
-
-        for i in range(self._batch.label[0].shape[0]):
-            label = self._batch.label[0][i].asnumpy()
-            for j in range(opt.partnum):
-                x = 4 + j * 3 + 1
-                y = 4 + j * 3 + 2
-                #imgcp = cv2.circle(imgcp, (int(label[x]*256), int(label[y]*256)), 15, (0, 0, 255), -1)
-                s = int(np.sqrt(opt.outputRes) * opt.outputRes * 10 / 4096) + 2
-                hm = self._makeGaussian(opt.outputRes, opt.outputRes, sigma=s, center=(label[x]*opt.outputRes, label[y]*opt.outputRes))
-                heatmap[i,j,:, :] = hm
-                #hm = hm.astype(np.uint8)
-
-        y_batch = np.zeros((self.batch_size, opt.nStack, opt.partnum,opt.outputRes, opt.outputRes ))
-        for i in range(opt.nStack):
-            y_batch[:,i,:,:,:] = heatmap
-        self.label_shape = (self.batch_size, opt.nStack, opt.partnum, opt.outputRes, opt.outputRes)
-        self.provide_label = [('hg_label', self.label_shape)]
-        #cv2.imwrite("/home/dan/test_img/2222.jpg", imgcp)
-        self._batch.label = [mx.nd.array(y_batch)]
-        #self.showHeatMap()
-        return True
+    #
+    # def _get_batch(self):
+    #     self._batch = self.rec.next()
+    #     if not self._batch:
+    #         return False
+    #     #data = mx.nd.cast(self._batch.data[0],dtype='uint8').asnumpy()
+    #     #data = np.transpose(data,(2,3,1,0))
+    #     #img_data = np.reshape(data, (256,256,3))
+    #     #img_data = cv2.fromarray(img_data)
+    #     #imgcp = img_data.copy()
+    #     heatmap = np.zeros((self._batch.label[0].shape[0],opt.partnum,opt.outputRes, opt.outputRes ), dtype=np.float32)
+    #
+    #     for i in range(self._batch.label[0].shape[0]):
+    #         label = self._batch.label[0][i].asnumpy()
+    #         for j in range(opt.partnum):
+    #             x = 4 + j * 3 + 1
+    #             y = 4 + j * 3 + 2
+    #             #imgcp = cv2.circle(imgcp, (int(label[x]*256), int(label[y]*256)), 15, (0, 0, 255), -1)
+    #             s = int(np.sqrt(opt.outputRes) * opt.outputRes * 10 / 4096) + 2
+    #             hm = self._makeGaussian(opt.outputRes, opt.outputRes, sigma=s, center=(label[x]*opt.outputRes, label[y]*opt.outputRes))
+    #             heatmap[i,j,:, :] = hm
+    #             #hm = hm.astype(np.uint8)
+    #
+    #     y_batch = np.zeros((self.batch_size, opt.nStack, opt.partnum,opt.outputRes, opt.outputRes ))
+    #     for i in range(opt.nStack):
+    #         y_batch[:,i,:,:,:] = heatmap
+    #     self.label_shape = (self.batch_size, opt.nStack, opt.partnum, opt.outputRes, opt.outputRes)
+    #     self.provide_label = [('hg_label', self.label_shape)]
+    #     #cv2.imwrite("/home/dan/test_img/2222.jpg", imgcp)
+    #     self._batch.label = [mx.nd.array(y_batch)]
+    #     #self.showHeatMap()
+    #     return True
 
     def showHeatMap(self):
         for i in range(self.heatmap.shape[0]):
@@ -217,8 +217,6 @@ class hgIter(mx.io.DataIter):
 
         old_x = max(0, ul[0]), min(len(img[0]), br[0])
         old_y = max(0, ul[1]), min(len(img), br[1])
-        print("_________")
-        print([old_y[0],old_y[1], old_x[0],old_x[1]])
         new_img = img[old_y[0]:old_y[1], old_x[0]:old_x[1],:]
 
         return scipy.misc.imresize(new_img, res)
@@ -281,7 +279,7 @@ class hgIter(mx.io.DataIter):
 
     @property
     def provide_label(self):
-        return [('label',(self.batch_size, self.hm_size,self.hm_size,self.partnum))]
+        return [('label',(self.batch_size,self.partnum, self.hm_size,self.hm_size,))]
 
     def get_batch_size(self):
 
@@ -300,7 +298,7 @@ class hgIter(mx.io.DataIter):
         assert (self.cursor < self.num_data), "DataIter needs reset."
 
         data = np.zeros((self.batch_size, 3, self.img_size, self.img_size))
-        label = np.zeros((self.batch_size, self.outsize ,self.outsize,self.partnum))
+        label = np.zeros((self.batch_size, self.partnum,self.outsize ,self.outsize,))
 
         if self.cursor + self.batch_size <= self.num_data:
             for i in range(self.batch_size):
@@ -319,7 +317,7 @@ class hgIter(mx.io.DataIter):
                     data[i] = np.transpose(crop_img.astype(np.float32) / 255,[2,0,1])
                 else:
                     data[i] = np.transpose(crop_img.astype(np.float32) ,[2,0,1])
-                label[i] = hm
+                label[i] = np.transpose(hm,[2,0,1])
         else:
             for i in range(self.num_data - self.cursor):
 
@@ -338,7 +336,7 @@ class hgIter(mx.io.DataIter):
                     data[i] = crop_img.astype(np.float32) / 255
                 else:
                     data[i] = crop_img.astype(np.float32)
-                label[i] = hm
+                label[i] = np.transpose(hm,[2,0,1])
             pad = self.batch_size - self.num_data + self.cursor
             for i in range(pad):
                 name = self.dataset[ i]
@@ -356,7 +354,7 @@ class hgIter(mx.io.DataIter):
                     data[i + self.num_data - self.cursor] = crop_img.astype(np.float32) / 255
                 else:
                     data[i + self.num_data - self.cursor] = crop_img.astype(np.float32)
-                label[i + self.num_data - self.cursor] = hm
+                label[i + self.num_data - self.cursor] = np.transpose(hm,[2,0,1])
 
 
         return mx.nd.array(data), mx.nd.array(label)
